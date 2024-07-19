@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import type { CoinbaseWallet } from '@web3-react/coinbase-wallet'
 import type { Web3ReactHooks } from '@web3-react/core'
 import type { GnosisSafe } from '@web3-react/gnosis-safe'
@@ -6,12 +6,18 @@ import type { MetaMask } from '@web3-react/metamask'
 import type { Network } from '@web3-react/network'
 import type { WalletConnect } from '@web3-react/walletconnect'
 import type { WalletConnect as WalletConnectV2 } from '@web3-react/walletconnect-v2'
+import JSBI from 'jsbi'
+import { Currency, CurrencyAmount } from '@uniswap/sdk-core'
+import { useSingleContractMultipleData } from '../hooks/multicall'
 
 import { getName } from '../utils'
 import { Accounts } from './Accounts'
 import { Chain } from './Chain'
 import { ConnectWithSelect } from './ConnectWithSelect'
 import { Status } from './Status'
+import { isAddress } from '../utilities/addresses'
+import { nativeOnChain } from '../utilities/constants/tokens'
+import { useInterfaceMulticall } from '../hooks/useContract'
 
 interface Props {
     connector: MetaMask | WalletConnect | WalletConnectV2 | CoinbaseWallet | Network | GnosisSafe
@@ -39,6 +45,41 @@ export function Card({
                          provider,
                      }: Props) {
     const [results, setResults] = useState<{ [key: string]: string }>({})
+    const pairedAddress = accounts && accounts.length > 0 ? accounts[0] : ''
+
+    // Function to get native currency balances
+    const useNativeCurrencyBalances = (uncheckedAddresses?: (string | undefined)[]): {
+        [address: string]: CurrencyAmount<Currency> | undefined
+    } => {
+        const multicallContract = useInterfaceMulticall()
+        const validAddressInputs: [string][] = useMemo(
+            () =>
+                uncheckedAddresses
+                    ? uncheckedAddresses
+                        .map(isAddress)
+                        .filter((a): a is string => a !== false)
+                        .sort()
+                        .map((addr) => [addr])
+                    : [],
+            [uncheckedAddresses]
+        )
+
+        const results = useSingleContractMultipleData(multicallContract, 'getEthBalance', validAddressInputs)
+
+        return useMemo(
+            () =>
+                validAddressInputs.reduce<{ [address: string]: CurrencyAmount<Currency> }>((memo, [address], i) => {
+                    const value = results?.[i]?.result?.[0]
+                    if (value && activeChainId) {
+                        memo[address] = CurrencyAmount.fromRawAmount(nativeOnChain(activeChainId), JSBI.BigInt(value.toString()))
+                    }
+                    return memo
+                }, {}),
+            [validAddressInputs, activeChainId, results]
+        )
+    }
+
+    const balances = useNativeCurrencyBalances([pairedAddress])
 
     const callEthMethod = async (method: string, params: any[] = []) => {
         if (!provider) return
@@ -96,6 +137,19 @@ export function Card({
                 error={error}
                 setError={setError}
             />
+
+            {/* Display ETH balances */}
+            <div style={{ marginBottom: '1rem' }}>
+                <h3>ETH Balances</h3>
+                {pairedAddress ? (
+                    <div>
+                        {pairedAddress}: {balances[pairedAddress]?.toSignificant(6) || 'Loading...'}
+                    </div>
+                ) : (
+                    <div>No address connected</div>
+                )}
+            </div>
+
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                 <div>
                     <p>eth_chainId</p>
@@ -124,7 +178,7 @@ export function Card({
                 </div>
                 <div>
                     <p>eth_getBalance</p>
-                    <button onClick={() => callEthMethod('eth_getBalance', ['0xYourAccountAddress', 'latest'])}>Get eth_getBalance</button>
+                    <button onClick={() => callEthMethod('eth_getBalance', [pairedAddress, 'latest'])}>Get eth_getBalance</button>
                     {results['eth_getBalance'] && <pre>{results['eth_getBalance']}</pre>}
                 </div>
                 <div>
